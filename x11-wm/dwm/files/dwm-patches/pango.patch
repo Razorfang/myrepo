@@ -1,5 +1,5 @@
 diff --git a/config.def.h b/config.def.h
-index a2ac963..e0a3b8a 100644
+index 9efa774..ef0e1b8 100644
 --- a/config.def.h
 +++ b/config.def.h
 @@ -5,7 +5,7 @@ static const unsigned int borderpx  = 1;        /* border pixel of windows */
@@ -12,11 +12,11 @@ index a2ac963..e0a3b8a 100644
  static const char col_gray1[]       = "#222222";
  static const char col_gray2[]       = "#444444";
 diff --git a/config.mk b/config.mk
-index b6eb7e0..0959d67 100644
+index ef8acf7..8c07361 100644
 --- a/config.mk
 +++ b/config.mk
-@@ -21,8 +21,8 @@ FREETYPEINC = /usr/include/freetype2
- #FREETYPEINC = ${X11INC}/freetype2
+@@ -22,8 +22,8 @@ FREETYPEINC = /usr/include/freetype2
+ #MANPREFIX = ${PREFIX}/man
  
  # includes and libs
 -INCS = -I${X11INC} -I${FREETYPEINC}
@@ -27,7 +27,7 @@ index b6eb7e0..0959d67 100644
  # flags
  CPPFLAGS = -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_POSIX_C_SOURCE=200809L -DVERSION=\"${VERSION}\" ${XINERAMAFLAGS}
 diff --git a/drw.c b/drw.c
-index 4cdbcbe..1795a13 100644
+index a58a2b4..716ce7b 100644
 --- a/drw.c
 +++ b/drw.c
 @@ -4,62 +4,12 @@
@@ -95,7 +95,7 @@ index 4cdbcbe..1795a13 100644
  Drw *
  drw_create(Display *dpy, int screen, Window root, unsigned int w, unsigned int h)
  {
-@@ -95,63 +45,41 @@ drw_free(Drw *drw)
+@@ -95,50 +45,41 @@ drw_free(Drw *drw)
  {
  	XFreePixmap(drw->dpy, drw->drawable);
  	XFreeGC(drw->dpy, drw->gc);
@@ -137,26 +137,13 @@ index 4cdbcbe..1795a13 100644
 -			return NULL;
 -		}
 -	} else {
--		die("no font specified.");
--	}
 +	PangoFontMap *fontmap;
 +	PangoContext *context;
 +	PangoFontDescription *desc;
 +	PangoFontMetrics *metrics;
- 
--	/* Do not allow using color fonts. This is a workaround for a BadLength
--	 * error from Xft with color glyphs. Modelled on the Xterm workaround. See
--	 * https://bugzilla.redhat.com/show_bug.cgi?id=1498269
--	 * https://lists.suckless.org/dev/1701/30932.html
--	 * https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=916349
--	 * and lots more all over the internet.
--	 */
--	FcBool iscol;
--	if(FcPatternGetBool(xfont->pattern, FC_COLOR, 0, &iscol) == FcResultMatch && iscol) {
--		XftFontClose(drw->dpy, xfont);
--		return NULL;
++
 +	if (!fontname) {
-+		die("no font specified.");
+ 		die("no font specified.");
  	}
  
  	font = ecalloc(1, sizeof(Fnt));
@@ -180,7 +167,7 @@ index 4cdbcbe..1795a13 100644
  	return font;
  }
  
-@@ -160,35 +88,28 @@ xfont_free(Fnt *font)
+@@ -147,35 +88,28 @@ xfont_free(Fnt *font)
  {
  	if (!font)
  		return;
@@ -225,7 +212,7 @@ index 4cdbcbe..1795a13 100644
  		xfont_free(font);
  	}
  }
-@@ -222,13 +143,6 @@ drw_scm_create(Drw *drw, const char *clrnames[], size_t clrcount)
+@@ -209,13 +143,6 @@ drw_scm_create(Drw *drw, const char *clrnames[], size_t clrcount)
  	return ret;
  }
  
@@ -239,21 +226,20 @@ index 4cdbcbe..1795a13 100644
  void
  drw_setscheme(Drw *drw, Clr *scm)
  {
-@@ -249,24 +163,16 @@ drw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled, int
+@@ -236,26 +163,16 @@ drw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled, int
  }
  
  int
 -drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lpad, const char *text, int invert)
 +drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lpad, const char *text, int invert, Bool markup)
  {
- 	char buf[1024];
--	int ty;
--	unsigned int ew;
-+	int ty, th;
-+	unsigned int ew, eh;
+-	int i, ty, ellipsis_x = 0;
+-	unsigned int tmpw, ew, ellipsis_w = 0, ellipsis_len;
++   char buf[1024];
++	int i, ty;
++	unsigned int ew;
  	XftDraw *d = NULL;
 -	Fnt *usedfont, *curfont, *nextfont;
- 	size_t i, len;
 -	int utf8strlen, utf8charlen, render = x || y || w || h;
 -	long utf8codepoint = 0;
 -	const char *utf8str;
@@ -261,22 +247,29 @@ index 4cdbcbe..1795a13 100644
 -	FcPattern *fcpattern;
 -	FcPattern *match;
 -	XftResult result;
--	int charexists = 0;
+-	int charexists = 0, overflow = 0;
+-	/* keep track of a couple codepoints for which we have no match. */
+-	enum { nomatches_len = 64 };
+-	static struct { long codepoint[nomatches_len]; unsigned int idx; } nomatches;
+-	static unsigned int ellipsis_width = 0;
 -
--	if (!drw || (render && !drw->scheme) || !text || !drw->fonts)
-+	int render = x || y || w || h;
+-	if (!drw || (render && (!drw->scheme || !w)) || !text || !drw->fonts)
++   size_t len;
++   int render = x || y || w || h;
 +
-+	if (!drw || (render && !drw->scheme) || !text || !drw->font)
++	if (!drw || (render && (!drw->scheme || !w)) || !text || !drw->font)
  		return 0;
  
  	if (!render) {
-@@ -281,98 +187,41 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
+@@ -270,114 +187,37 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
  		w -= lpad;
  	}
  
 -	usedfont = drw->fonts;
+-	if (!ellipsis_width && render)
+-		ellipsis_width = drw_fontset_getwidth(drw, "...");
 -	while (1) {
--		utf8strlen = 0;
+-		ew = ellipsis_len = utf8strlen = 0;
 -		utf8str = text;
 -		nextfont = NULL;
 -		while (*text) {
@@ -284,55 +277,78 @@ index 4cdbcbe..1795a13 100644
 -			for (curfont = drw->fonts; curfont; curfont = curfont->next) {
 -				charexists = charexists || XftCharExists(drw->dpy, curfont->xfont, utf8codepoint);
 -				if (charexists) {
--					if (curfont == usedfont) {
+-					drw_font_getexts(curfont, text, utf8charlen, &tmpw, NULL);
+-					if (ew + ellipsis_width <= w) {
+-						/* keep track where the ellipsis still fits */
+-						ellipsis_x = x + ew;
+-						ellipsis_w = w - ew;
+-						ellipsis_len = utf8strlen;
+-					}
+-
+-					if (ew + tmpw > w) {
+-						overflow = 1;
+-						/* called from drw_fontset_getwidth_clamp():
+-						 * it wants the width AFTER the overflow
+-						 */
+-						if (!render)
+-							x += tmpw;
+-						else
+-							utf8strlen = ellipsis_len;
+-					} else if (curfont == usedfont) {
 -						utf8strlen += utf8charlen;
 -						text += utf8charlen;
+-						ew += tmpw;
 -					} else {
 -						nextfont = curfont;
 -					}
 -					break;
 -				}
 -			}
-+	len = strlen(text);
- 
--			if (!charexists || nextfont)
+-
+-			if (overflow || !charexists || nextfont)
 -				break;
 -			else
 -				charexists = 0;
-+	if (len) {
-+		drw_font_getexts(drw->font, text, len, &ew, &eh, markup);
-+		th = eh;
-+		/* shorten text if necessary */
-+		for (len = MIN(len, sizeof(buf) - 1); len && ew > w; len--) {
-+			drw_font_getexts(drw->font, text, len, &ew, &eh, markup);
-+			if (eh > th)
-+				th = eh;
- 		}
- 
--		if (utf8strlen) {
--			drw_font_getexts(usedfont, utf8str, utf8strlen, &ew, NULL);
--			/* shorten text if necessary */
--			for (len = MIN(utf8strlen, sizeof(buf) - 1); len && ew > w; len--)
--				drw_font_getexts(usedfont, utf8str, len, &ew, NULL);
--
--			if (len) {
--				memcpy(buf, utf8str, len);
--				buf[len] = '\0';
--				if (len < utf8strlen)
--					for (i = len; i && i > len - 3; buf[--i] = '.')
--						; /* NOP */
--
--				if (render) {
--					ty = y + (h - usedfont->h) / 2 + usedfont->xfont->ascent;
--					XftDrawStringUtf8(d, &drw->scheme[invert ? ColBg : ColFg],
--					                  usedfont->xfont, x, ty, (XftChar8 *)buf, len);
--				}
--				x += ew;
--				w -= ew;
--			}
 -		}
 -
--		if (!*text) {
+-		if (utf8strlen) {
+-			if (render) {
+-				ty = y + (h - usedfont->h) / 2 + usedfont->xfont->ascent;
+-				XftDrawStringUtf8(d, &drw->scheme[invert ? ColBg : ColFg],
+-				                  usedfont->xfont, x, ty, (XftChar8 *)utf8str, utf8strlen);
++   len = strlen(text);
++ 
++   if (len) {
++      drw_font_getexts(drw->font, text, len, &ew, NULL, markup);
++      /* shorten text if necessary */
++      for (len = MIN(len, sizeof(buf) - 1); len && ew > w; len--)
++         drw_font_getexts(drw->font, text, len, &ew, NULL, markup);
++ 
++      if (len) {
++         memcpy(buf, text, len);
++         buf[len] = '\0';
++         if (len < strlen(text))
++            for (i = len; i && i > len - 3; buf[--i] = '.')
++               ; /* NOP */
++ 
++         if (render) {
++            ty = y + (h - drw->font->h) / 2;
++            if(markup)
++               pango_layout_set_markup(drw->font->layout, buf, len);
++            else
++               pango_layout_set_text(drw->font->layout, buf, len);
++            pango_xft_render_layout(d, &drw->scheme[invert ? ColBg : ColFg],
++               drw->font->layout, x * PANGO_SCALE, ty * PANGO_SCALE);
++            if(markup) /* clear markup attributes */
++               pango_layout_set_attributes(drw->font->layout, NULL);
+ 			}
+ 			x += ew;
+ 			w -= ew;
+ 		}
+-		if (render && overflow)
+-			drw_text(drw, ellipsis_x, y, ellipsis_w, h, 0, "...", invert);
+-
+-		if (!*text || overflow) {
 -			break;
 -		} else if (nextfont) {
 -			charexists = 0;
@@ -341,6 +357,12 @@ index 4cdbcbe..1795a13 100644
 -			/* Regardless of whether or not a fallback font is found, the
 -			 * character must be drawn. */
 -			charexists = 1;
+-
+-			for (i = 0; i < nomatches_len; ++i) {
+-				/* avoid calling XftFontMatch if we know we won't find a match */
+-				if (utf8codepoint == nomatches.codepoint[i])
+-					goto no_match;
+-			}
 -
 -			fccharset = FcCharSetCreate();
 -			FcCharSetAddChar(fccharset, utf8codepoint);
@@ -353,7 +375,6 @@ index 4cdbcbe..1795a13 100644
 -			fcpattern = FcPatternDuplicate(drw->fonts->pattern);
 -			FcPatternAddCharSet(fcpattern, FC_CHARSET, fccharset);
 -			FcPatternAddBool(fcpattern, FC_SCALABLE, FcTrue);
--			FcPatternAddBool(fcpattern, FC_COLOR, FcFalse);
 -
 -			FcConfigSubstitute(NULL, fcpattern, FcMatchPattern);
 -			FcDefaultSubstitute(fcpattern);
@@ -370,35 +391,18 @@ index 4cdbcbe..1795a13 100644
 -					curfont->next = usedfont;
 -				} else {
 -					xfont_free(usedfont);
+-					nomatches.codepoint[++nomatches.idx % nomatches_len] = utf8codepoint;
+-no_match:
 -					usedfont = drw->fonts;
 -				}
-+		if (len) {
-+			memcpy(buf, text, len);
-+			buf[len] = '\0';
-+			if (len < strlen(text))
-+				for (i = len; i && i > len - 3; buf[--i] = '.')
-+					; /* NOP */
-+
-+			if (render) {
-+				ty = y + (h - th) / 2;
-+				if(markup)
-+					pango_layout_set_markup(drw->font->layout, buf, len);
-+				else
-+					pango_layout_set_text(drw->font->layout, buf, len);
-+				pango_xft_render_layout(d, &drw->scheme[invert ? ColBg : ColFg],
-+					drw->font->layout, x * PANGO_SCALE, ty * PANGO_SCALE);
-+				if(markup) /* clear markup attributes */
-+					pango_layout_set_attributes(drw->font->layout, NULL);
- 			}
-+			x += ew;
-+			w -= ew;
- 		}
+-			}
+-		}
  	}
 +
  	if (d)
  		XftDrawDestroy(d);
  
-@@ -390,26 +239,31 @@ drw_map(Drw *drw, Window win, int x, int y, unsigned int w, unsigned int h)
+@@ -395,35 +235,40 @@ drw_map(Drw *drw, Window win, int x, int y, unsigned int w, unsigned int h)
  }
  
  unsigned int
@@ -410,6 +414,17 @@ index 4cdbcbe..1795a13 100644
  		return 0;
 -	return drw_text(drw, 0, 0, 0, 0, 0, text, 0);
 +	return drw_text(drw, 0, 0, 0, 0, 0, text, 0, markup);
+ }
+ 
+ unsigned int
+ drw_fontset_getwidth_clamp(Drw *drw, const char *text, unsigned int n)
+ {
+ 	unsigned int tmp = 0;
+-	if (drw && drw->fonts && text && n)
+-		tmp = drw_text(drw, 0, 0, 0, 0, 0, text, n);
++	if (drw && drw->font && text && n)
++		tmp = drw_text(drw, 0, 0, 0, 0, 0, text, n, True);
+ 	return MIN(n, tmp);
  }
  
  void
@@ -440,7 +455,7 @@ index 4cdbcbe..1795a13 100644
  
  Cur *
 diff --git a/drw.h b/drw.h
-index 4bcd5ad..3d3a906 100644
+index 6471431..991e42b 100644
 --- a/drw.h
 +++ b/drw.h
 @@ -7,9 +7,7 @@ typedef struct {
@@ -463,22 +478,23 @@ index 4bcd5ad..3d3a906 100644
  } Drw;
  
  /* Drawable abstraction */
-@@ -32,10 +30,10 @@ void drw_resize(Drw *drw, unsigned int w, unsigned int h);
+@@ -32,11 +30,11 @@ void drw_resize(Drw *drw, unsigned int w, unsigned int h);
  void drw_free(Drw *drw);
  
  /* Fnt abstraction */
 -Fnt *drw_fontset_create(Drw* drw, const char *fonts[], size_t fontcount);
 -void drw_fontset_free(Fnt* set);
 -unsigned int drw_fontset_getwidth(Drw *drw, const char *text);
--void drw_font_getexts(Fnt *font, const char *text, unsigned int len, unsigned int *w, unsigned int *h);
 +Fnt *drw_font_create(Drw* drw, const char font[]);
 +void drw_font_free(Fnt* set);
 +unsigned int drw_font_getwidth(Drw *drw, const char *text, Bool markup);
 +void drw_font_getexts(Fnt *font, const char *text, unsigned int len, unsigned int *w, unsigned int *h, Bool markup);
+ unsigned int drw_fontset_getwidth_clamp(Drw *drw, const char *text, unsigned int n);
+-void drw_font_getexts(Fnt *font, const char *text, unsigned int len, unsigned int *w, unsigned int *h);
  
  /* Colorscheme abstraction */
  void drw_clr_create(Drw *drw, Clr *dest, const char *clrname);
-@@ -46,12 +44,11 @@ Cur *drw_cur_create(Drw *drw, int shape);
+@@ -47,12 +45,11 @@ Cur *drw_cur_create(Drw *drw, int shape);
  void drw_cur_free(Drw *drw, Cur *cursor);
  
  /* Drawing context manipulation */
@@ -493,7 +509,7 @@ index 4bcd5ad..3d3a906 100644
  /* Map functions */
  void drw_map(Drw *drw, Window win, int x, int y, unsigned int w, unsigned int h);
 diff --git a/dwm.c b/dwm.c
-index a96f33c..6cbeaac 100644
+index 253aba7..0903fd0 100644
 --- a/dwm.c
 +++ b/dwm.c
 @@ -40,6 +40,7 @@
@@ -522,17 +538,17 @@ index a96f33c..6cbeaac 100644
 +static char stext[512];
  static int screen;
  static int sw, sh;           /* X display screen geometry width, height */
- static int bh, blw = 0;      /* bar geometry */
-@@ -440,7 +442,7 @@ buttonpress(XEvent *e)
+ static int bh;               /* bar height */
+@@ -442,7 +444,7 @@ buttonpress(XEvent *e)
  			arg.ui = 1 << i;
- 		} else if (ev->x < x + blw)
+ 		} else if (ev->x < x + TEXTW(selmon->ltsymbol))
  			click = ClkLtSymbol;
 -		else if (ev->x > selmon->ww - (int)TEXTW(stext))
 +		else if (ev->x > selmon->ww - (int)TEXTWM(stext))
  			click = ClkStatusText;
  		else
  			click = ClkWinTitle;
-@@ -697,8 +699,8 @@ void
+@@ -700,8 +702,8 @@ void
  drawbar(Monitor *m)
  {
  	int x, w, tw = 0;
@@ -543,23 +559,18 @@ index a96f33c..6cbeaac 100644
  	unsigned int i, occ = 0, urg = 0;
  	Client *c;
  
-@@ -706,11 +708,10 @@ drawbar(Monitor *m)
- 		return;
- 
+@@ -711,8 +713,8 @@ drawbar(Monitor *m)
  	/* draw status first so it can be overdrawn by tags later */
--	if (m == selmon) { /* status is only drawn on selected monitor */
--		drw_setscheme(drw, scheme[SchemeNorm]);
+ 	if (m == selmon) { /* status is only drawn on selected monitor */
+ 		drw_setscheme(drw, scheme[SchemeNorm]);
 -		tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
 -		drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
--	}
-+	/* status is drawn on all monitors */
-+	drw_setscheme(drw, scheme[SchemeNorm]);
-+	tw = TEXTWM(stext) - lrpad + 2; /* 2px right padding */
-+	drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0, True);
++		tw = TEXTWM(stext) - lrpad + 2; /* 2px right padding */
++		drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0, True);
+ 	}
  
  	for (c = m->clients; c; c = c->next) {
- 		occ |= c->tags;
-@@ -721,7 +722,7 @@ drawbar(Monitor *m)
+@@ -724,7 +726,7 @@ drawbar(Monitor *m)
  	for (i = 0; i < LENGTH(tags); i++) {
  		w = TEXTW(tags[i]);
  		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
@@ -568,9 +579,9 @@ index a96f33c..6cbeaac 100644
  		if (occ & 1 << i)
  			drw_rect(drw, x + boxs, boxs, boxw, boxw,
  				m == selmon && selmon->sel && selmon->sel->tags & 1 << i,
-@@ -730,12 +731,12 @@ drawbar(Monitor *m)
+@@ -733,12 +735,12 @@ drawbar(Monitor *m)
  	}
- 	w = blw = TEXTW(m->ltsymbol);
+ 	w = TEXTW(m->ltsymbol);
  	drw_setscheme(drw, scheme[SchemeNorm]);
 -	x = drw_text(drw, x, 0, w, bh, lrpad / 2, m->ltsymbol, 0);
 +	x = drw_text(drw, x, 0, w, bh, lrpad / 2, m->ltsymbol, 0, False);
@@ -583,7 +594,7 @@ index a96f33c..6cbeaac 100644
  			if (m->sel->isfloating)
  				drw_rect(drw, x + boxs, boxs, boxw, boxw, m->sel->isfixed, 0);
  		} else {
-@@ -1546,10 +1547,10 @@ setup(void)
+@@ -1543,10 +1545,10 @@ setup(void)
  	sh = DisplayHeight(dpy, screen);
  	root = RootWindow(dpy, screen);
  	drw = drw_create(dpy, screen, root, sw, sh);
@@ -597,27 +608,6 @@ index a96f33c..6cbeaac 100644
  	updategeom();
  	/* init atoms */
  	utf8string = XInternAtom(dpy, "UTF8_STRING", False);
-@@ -1600,7 +1601,6 @@ setup(void)
- 	focus(NULL);
- }
- 
--
- void
- seturgent(Client *c, int urg)
- {
-@@ -1993,9 +1993,11 @@ updatesizehints(Client *c)
- void
- updatestatus(void)
- {
-+	Monitor *m;
- 	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext)))
- 		strcpy(stext, "dwm-"VERSION);
--	drawbar(selmon);
-+	for (m = mons; m; m = m->next)
-+		drawbar(m);
- }
- 
- void
 diff --git a/util.h b/util.h
 index f633b51..531ab25 100644
 --- a/util.h
